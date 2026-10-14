@@ -136,9 +136,10 @@ export const REQUEST_STATUS_ORDER: RequestStatus[] = ['new', 'reviewing', 'appro
 
 export const ROLE: Record<Role, { label: string; tone: Tone }> = {
   employee: { label: 'Сотрудник', tone: 'gray' },
+  editor: { label: 'Редактор базы знаний', tone: 'teal' },
   manager: { label: 'Руководитель', tone: 'blue' },
   admin: { label: 'Администратор', tone: 'violet' },
 };
-export const ROLE_ORDER: Role[] = ['employee', 'manager', 'admin'];
+export const ROLE_ORDER: Role[] = ['employee', 'editor', 'manager', 'admin'];
 
 export const byName = (a: Employee, b: Employee) => a.name.localeCompare(b.name, 'ru');

@@ -30,6 +30,7 @@ import {
   today,
   type Tone,
 } from '../lib/utils';
+import type { Access } from '../lib/permissions';
 import { Avatar, Button, IconButton, Modal, useUi } from './ui';
 import { ErrorBoundary } from './ErrorBoundary';
 
@@ -39,16 +40,17 @@ interface NavEntry {
   short?: string;
   icon: LucideIcon;
   end?: boolean;
-  adminOnly?: boolean;
+  /** Пункт виден, только если проверка вернула true. */
+  visible?: (access: Access) => boolean;
 }
 
 const NAV: NavEntry[] = [
   { to: '/', label: 'Главная', icon: House, end: true },
-  { to: '/kb', label: 'База знаний', short: 'Знания', icon: BookOpen },
-  { to: '/tasks', label: 'Задачи', icon: ListChecks },
-  { to: '/requests', label: 'Заявки', icon: Inbox },
-  { to: '/people', label: 'Сотрудники', icon: Users },
-  { to: '/admin', label: 'Администрирование', icon: Settings, adminOnly: true },
+  { to: '/kb', label: 'База знаний', short: 'Знания', icon: BookOpen, visible: (a) => a.has('kb.view') },
+  { to: '/tasks', label: 'Задачи', icon: ListChecks, visible: (a) => a.has('tasks.access') },
+  { to: '/requests', label: 'Заявки', icon: Inbox, visible: (a) => a.has('requests.access') },
+  { to: '/people', label: 'Сотрудники', icon: Users, visible: (a) => a.has('employees.view') },
+  { to: '/admin', label: 'Администрирование', icon: Settings, visible: (a) => a.canOpenAdmin() },
 ];
 
 function useClickOutside(ref: RefObject<HTMLElement | null>, active: boolean, onClose: () => void) {
@@ -72,20 +74,21 @@ function useClickOutside(ref: RefObject<HTMLElement | null>, active: boolean, on
 /* ---------- Поиск по всему порталу ---------- */
 
 function GlobalSearch({ autoFocus, onPick }: { autoFocus?: boolean; onPick?: () => void }) {
-  const { state, me, can } = useStore();
+  const { state, access } = useStore();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
   useClickOutside(boxRef, open, () => setOpen(false));
 
+  // в результатах только то, что пользователю разрешено видеть
   const groups = useMemo(() => {
     if (query.trim().length < 2) return null;
-    const requests = can('request.viewAll') ? state.requests : state.requests.filter((r) => r.authorId === me.id);
     return [
       {
         title: 'База знаний',
         items: state.articles
+          .filter(access.canViewArticle)
           .filter((a) => matches(query, a.title, stripHtml(a.content)))
           .slice(0, 5)
           .map((a) => ({ key: a.id, to: `/kb/${a.id}`, text: a.title, note: 'Статья' })),
@@ -93,26 +96,28 @@ function GlobalSearch({ autoFocus, onPick }: { autoFocus?: boolean; onPick?: () 
       {
         title: 'Задачи',
         items: state.tasks
+          .filter(access.canViewTask)
           .filter((t) => matches(query, t.title, t.description))
           .slice(0, 5)
           .map((t) => ({ key: t.id, to: `/tasks/${t.id}`, text: t.title, note: TASK_STATUS[t.status].label })),
       },
       {
         title: 'Заявки',
-        items: requests
+        items: state.requests
+          .filter(access.canViewRequest)
           .filter((r) => matches(query, r.title, r.description, r.category))
           .slice(0, 5)
           .map((r) => ({ key: r.id, to: `/requests/${r.id}`, text: r.title, note: REQUEST_STATUS[r.status].label })),
       },
       {
         title: 'Сотрудники',
-        items: state.employees
+        items: (access.has('employees.view') ? state.employees : [])
           .filter((e) => matches(query, e.name, e.position, e.department))
           .slice(0, 5)
           .map((e) => ({ key: e.id, to: `/people/${e.id}`, text: e.name, note: e.position })),
       },
     ].filter((g) => g.items.length > 0);
-  }, [query, state, me.id, can]);
+  }, [query, state, access]);
 
   const go = (to: string) => {
     setQuery('');
@@ -163,12 +168,12 @@ function GlobalSearch({ autoFocus, onPick }: { autoFocus?: boolean; onPick?: () 
 /* ---------- Уведомления ---------- */
 
 function useNotifications() {
-  const { state, me, can, empName } = useStore();
+  const { state, me, access, empName } = useStore();
   return useMemo(() => {
     const now = today();
     const list: { key: string; to: string; text: string; tone: Tone }[] = [];
     for (const t of state.tasks) {
-      if (t.status === 'done') continue;
+      if (t.status === 'done' || !access.canViewTask(t)) continue;
       if (t.assigneeId === me.id) {
         const left = daysBetween(now, t.dueDate);
         if (left < 0) list.push({ key: `o${t.id}`, to: `/tasks/${t.id}`, tone: 'red', text: `Просрочена задача «${t.title}»` });
@@ -179,7 +184,8 @@ function useNotifications() {
       }
     }
     for (const r of state.requests) {
-      if (can('request.viewAll') && r.status === 'new' && r.authorId !== me.id) {
+      if (!access.canViewRequest(r)) continue;
+      if (access.has('requests.decide') && r.status === 'new' && r.authorId !== me.id) {
         list.push({ key: `n${r.id}`, to: `/requests/${r.id}`, tone: 'blue', text: `Новая заявка «${r.title}» — ${empName(r.authorId)}` });
       }
       const last = r.history[r.history.length - 1];
@@ -188,7 +194,7 @@ function useNotifications() {
       }
     }
     return list;
-  }, [state.tasks, state.requests, me.id, can, empName]);
+  }, [state.tasks, state.requests, me.id, access, empName]);
 }
 
 function Notifications() {
@@ -358,7 +364,7 @@ function UserMenu() {
 /* ---------- Каркас ---------- */
 
 export function Layout() {
-  const { state, me, can } = useStore();
+  const { state, me, access } = useStore();
   const location = useLocation();
   const [demoOpen, setDemoOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -376,12 +382,11 @@ export function Layout() {
     document.title = section && section.to !== '/' ? `${section.label} — Портал компании` : 'Портал компании';
   }, [location.pathname]);
 
-  const nav = NAV.filter((n) => !n.adminOnly || can('admin'));
+  const nav = NAV.filter((n) => !n.visible || n.visible(access));
+  const pendingRequest = (r: { status: string }) => r.status === 'new' || r.status === 'reviewing';
   const counts: Record<string, number> = {
-    '/tasks': state.tasks.filter((t) => t.assigneeId === me.id && t.status !== 'done').length,
-    '/requests': can('request.viewAll')
-      ? state.requests.filter((r) => r.status === 'new' || r.status === 'reviewing').length
-      : state.requests.filter((r) => r.authorId === me.id && (r.status === 'new' || r.status === 'reviewing')).length,
+    '/tasks': state.tasks.filter((t) => t.assigneeId === me.id && t.status !== 'done' && access.canViewTask(t)).length,
+    '/requests': state.requests.filter((r) => access.canViewRequest(r) && pendingRequest(r)).length,
   };
   const bottom = nav.slice(0, 4);
   const more = nav.slice(4);

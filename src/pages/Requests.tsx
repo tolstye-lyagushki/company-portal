@@ -39,6 +39,7 @@ function RequestForm({ request, onClose }: { request?: WorkRequest; onClose: () 
     if (!form.title.trim()) return setError('Укажите тему заявки');
     if (!form.description.trim()) return setError('Опишите, что требуется');
     const id = actions.saveRequest({ ...form, title: form.title.trim(), description: form.description.trim() }, request?.id);
+    if (!id) return;
     toast(request ? 'Заявка сохранена' : 'Заявка отправлена на рассмотрение');
     onClose();
     if (!request) navigate(`/requests/${id}`);
@@ -97,7 +98,7 @@ function RequestForm({ request, onClose }: { request?: WorkRequest; onClose: () 
 }
 
 function RequestDetails({ request, onClose, onEdit }: { request: WorkRequest; onClose: () => void; onEdit: () => void }) {
-  const { actions, can, emp, empName } = useStore();
+  const { actions, access, emp, empName } = useStore();
   const { confirm, toast } = useUi();
   const [tab, setTab] = useState<'comments' | 'history'>('comments');
   const author = emp(request.authorId);
@@ -110,13 +111,13 @@ function RequestDetails({ request, onClose, onEdit }: { request: WorkRequest; on
       danger: true,
     });
     if (!ok) return;
-    actions.deleteRequest(request.id);
+    if (!actions.deleteRequest(request.id)) return;
     toast('Заявка удалена');
     onClose();
   };
 
-  const canEdit = can('request.edit', request);
-  const canDelete = can('request.delete', request);
+  const canEdit = access.canEditRequest(request);
+  const canDelete = access.canDeleteRequest(request);
 
   return (
     <Modal
@@ -165,7 +166,7 @@ function RequestDetails({ request, onClose, onEdit }: { request: WorkRequest; on
         </div>
       </div>
 
-      {can('request.status') && (
+      {access.has('requests.decide') && (
         <div className="decision">
           <span className="kv-label">Решение руководителя</span>
           <div className="actions">
@@ -175,8 +176,7 @@ function RequestDetails({ request, onClose, onEdit }: { request: WorkRequest; on
                 variant={t.variant ?? 'secondary'}
                 size="sm"
                 onClick={() => {
-                  actions.setRequestStatus(request.id, t.to);
-                  toast(`Статус заявки: ${REQUEST_STATUS[t.to].label.toLowerCase()}`);
+                  if (actions.setRequestStatus(request.id, t.to)) toast(`Статус заявки: ${REQUEST_STATUS[t.to].label.toLowerCase()}`);
                 }}
               >
                 {t.label}
@@ -218,10 +218,10 @@ function RequestDetails({ request, onClose, onEdit }: { request: WorkRequest; on
 
 export default function Requests() {
   const { id } = useParams();
-  const { state, me, can, empName } = useStore();
+  const { state, me, access, empName } = useStore();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const lead = can('request.viewAll');
+  const lead = access.has('requests.viewAll');
 
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | RequestStatus>('all');
@@ -253,7 +253,7 @@ export default function Requests() {
   );
 
   const found = id ? state.requests.find((r) => r.id === id) : undefined;
-  const selected = found && (lead || found.authorId === me.id) ? found : undefined;
+  const selected = found && access.canViewRequest(found) ? found : undefined;
   const filtered = status !== 'all' || category !== 'all' || query.trim() !== '';
 
   return (
@@ -355,7 +355,7 @@ export default function Requests() {
           footer={<Button variant="primary" onClick={() => navigate('/requests')}>К списку заявок</Button>}
         >
           <p className="confirm-text">
-            {found ? 'Чужие заявки видят только руководители и администраторы.' : 'Возможно, заявку удалили.'}
+            {found ? 'Чужие заявки видят только сотрудники с правом «Просмотр всех заявок».' : 'Возможно, заявку удалили.'}
           </p>
         </Modal>
       )}

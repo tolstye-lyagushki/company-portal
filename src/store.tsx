@@ -2,7 +2,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type {
   AppState,
   Article,
+  ArticleStatus,
   Employee,
+  PermissionOverrides,
   Priority,
   RequestStatus,
   Role,
@@ -10,7 +12,9 @@ import type {
   TaskStatus,
   WorkRequest,
 } from './types';
-import { createSeed, SEED_VERSION } from './data/seed';
+import { createSeed } from './data/seed';
+import { migrate } from './lib/migrate';
+import { PERMISSION_LABEL, cleanOverrides, createAccess, forbiddenGrants, type Access } from './lib/permissions';
 import { REQUEST_STATUS, ROLE, TASK_STATUS, uid } from './lib/utils';
 import { useUi } from './components/ui';
 
@@ -20,132 +24,7 @@ export const STORAGE_KEY = 'company-portal:v1';
 const BACKUP_KEY = 'company-portal:unreadable-backup';
 const LOG_LIMIT = 300;
 
-type Loose = Record<string, unknown>;
-const list = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
-const isObject = (value: unknown): value is Loose => typeof value === 'object' && value !== null;
-const hasId = (value: unknown): value is Loose => isObject(value) && typeof value.id === 'string';
-/** Пустые даты по умолчанию: интерфейс показывает их как «—», а сортировка по строкам не ломается. */
-const STAMPS = { createdAt: '', updatedAt: '' };
-const fixComment = (c: Loose) => ({ authorId: '', text: '', createdAt: '', ...c });
-
-/**
- * Приводит сохранённые данные к текущему формату, не теряя записей.
- * Версия 1 содержала графики смен: поля shiftOverrides, pattern и patternOffset отбрасываются,
- * записи журнала раздела «График» удаляются. Недостающие необязательные поля заполняются пустыми значениями.
- * Возвращает null, если данные непригодны.
- */
-export function migrate(raw: unknown): AppState | null {
-  if (!isObject(raw) || typeof raw.version !== 'number' || raw.version > SEED_VERSION) return null;
-
-  const employees = list<unknown>(raw.employees)
-    .filter((e): e is Loose => hasId(e) && typeof e.name === 'string')
-    .map(({ pattern: _pattern, patternOffset: _offset, ...e }) => ({
-      position: '',
-      department: '',
-      email: '',
-      phone: '',
-      hiredAt: '',
-      about: '',
-      ...e,
-      role: typeof e.role === 'string' && e.role in ROLE ? e.role : 'employee',
-    })) as Employee[];
-  if (employees.length === 0) return null;
-
-  const seed = createSeed();
-  const currentUserId = employees.some((e) => e.id === raw.currentUserId) ? (raw.currentUserId as string) : employees[0].id;
-
-  const migrated: AppState = {
-    version: SEED_VERSION,
-    currentUserId,
-    employees,
-    categories: list<unknown>(raw.categories).filter(hasId) as unknown as AppState['categories'],
-    requestCategories: Array.isArray(raw.requestCategories)
-      ? list<unknown>(raw.requestCategories).filter((c): c is string => typeof c === 'string')
-      : seed.requestCategories,
-    articles: list<unknown>(raw.articles)
-      .filter(hasId)
-      .map((a) => ({ ...STAMPS, title: '', content: '', categoryId: null, authorId: '', ...a })) as unknown as Article[],
-    tasks: list<unknown>(raw.tasks)
-      .filter(hasId)
-      .map((t) => ({
-        ...STAMPS,
-        title: '',
-        description: '',
-        assigneeId: null,
-        creatorId: '',
-        dueDate: '',
-        priority: 'medium',
-        status: 'new',
-        ...t,
-        comments: list<unknown>(t.comments).filter(hasId).map(fixComment),
-      })) as unknown as Task[],
-    requests: list<unknown>(raw.requests)
-      .filter(hasId)
-      .map((r) => ({
-        ...STAMPS,
-        title: '',
-        description: '',
-        category: '',
-        authorId: '',
-        status: 'new',
-        ...r,
-        comments: list<unknown>(r.comments).filter(hasId).map(fixComment),
-        history: list<unknown>(r.history).filter(hasId).map((h) => ({ authorId: '', text: '', at: '', ...h })),
-      })) as unknown as WorkRequest[],
-    log: list<unknown>(raw.log)
-      .filter((l): l is Loose => hasId(l) && l.section !== 'График')
-      .map((l) => ({ at: '', userId: '', section: '', text: '', ...l })) as unknown as AppState['log'],
-  };
-  return raw.version < 2 ? replaceLegacyTexts(migrated) : migrated;
-}
-
-/*
- * Демо-записи версии 1 упоминали графики смен. Заменяем такие тексты, только если они
- * совпадают с исходными дословно — то, что пользователь успел отредактировать, не трогаем.
- */
-const LEGACY_TEXT: [string, string][] = [
-  ['Склад, приёмка и отгрузки. Составляет графики сменных сотрудников.', 'Склад, приёмка и отгрузки. Отвечает за договоры с перевозчиками.'],
-  ['Утвердить график смен на следующий месяц', 'Утвердить план отгрузок на следующий месяц'],
-  ['Согласовать график поддержки и склада, учесть отпуска.', 'Согласовать объёмы отгрузок с отделом продаж и складом, учесть отпуска.'],
-  ['Черновик графика готов, посмотрите раздел «Графики».', 'Черновик плана готов, таблица во вложении к письму.'],
-  ['Перенос смены', 'Отгул на один день'],
-  ['Создана заявка «Перенос смены»', 'Создана заявка «Отгул на один день»'],
-];
-const LEGACY_FRAGMENTS: [string, string][] = [
-  ['базу знаний, задачи, заявки и графики смен.', 'базу знаний, задачи, заявки и справочник сотрудников.'],
-  ['<li><strong>Графики</strong> — расписание смен по сотрудникам и датам.</li>', '<li><strong>Сотрудники</strong> — контакты коллег, должности и подразделения.</li>'],
-  ['Если у вас смены — предупредите', 'Если вы работаете с клиентами или на складе — предупредите'],
-];
-const legacyText = (value: string) => LEGACY_TEXT.find(([from]) => from === value)?.[1] ?? value;
-// в повреждённых данных поле может оказаться не строкой — тогда оставляем как есть
-const replaceIn = (value: string, from: string | RegExp, to: string) => (typeof value === 'string' ? value.replace(from, to) : value);
-
-function replaceLegacyTexts(state: AppState): AppState {
-  return {
-    ...state,
-    employees: state.employees.map((e) => ({ ...e, about: legacyText(e.about) })),
-    articles: state.articles.map((a) => ({
-      ...a,
-      content: LEGACY_FRAGMENTS.reduce((html, [from, to]) => replaceIn(html, from, to), a.content),
-    })),
-    tasks: state.tasks.map((t) => ({
-      ...t,
-      title: legacyText(t.title),
-      description: legacyText(t.description),
-      comments: t.comments.map((c) => ({ ...c, text: legacyText(c.text) })),
-    })),
-    requests: state.requests.map((r) => ({
-      ...r,
-      title: legacyText(r.title),
-      description: replaceIn(
-        r.description,
-        /^Прошу перенести мою смену с (\d{2}\.\d{2}\.\d{4}) на следующий день по семейным обстоятельствам\.$/,
-        'Прошу предоставить отгул $1 по семейным обстоятельствам.',
-      ),
-    })),
-    log: state.log.map((l) => ({ ...l, text: legacyText(l.text) })),
-  };
-}
+export { migrate };
 
 function load(): AppState {
   let raw: string | null = null;
@@ -168,47 +47,7 @@ function load(): AppState {
   return createSeed();
 }
 
-/* ---------- Права (демонстрационные, не защита доступа) ---------- */
-
-export type Permission =
-  | 'article.edit'
-  | 'task.edit'
-  | 'task.status'
-  | 'request.viewAll'
-  | 'request.status'
-  | 'request.edit'
-  | 'request.delete'
-  | 'employee.edit'
-  | 'admin';
-
-function check(me: Employee, permission: Permission, target?: Article | Task | WorkRequest | Employee): boolean {
-  const lead = me.role === 'manager' || me.role === 'admin';
-  switch (permission) {
-    case 'article.edit':
-      return lead || (target as Article | undefined)?.authorId === me.id;
-    case 'task.edit':
-      return lead || (target as Task | undefined)?.creatorId === me.id;
-    case 'task.status': {
-      const t = target as Task | undefined;
-      return lead || t?.creatorId === me.id || t?.assigneeId === me.id;
-    }
-    case 'request.viewAll':
-    case 'request.status':
-      return lead;
-    case 'request.edit': {
-      const r = target as WorkRequest | undefined;
-      return r?.authorId === me.id && r.status === 'new';
-    }
-    case 'request.delete': {
-      const r = target as WorkRequest | undefined;
-      return me.role === 'admin' || (r?.authorId === me.id && r.status === 'new');
-    }
-    case 'employee.edit':
-      return me.role === 'admin' || (target as Employee | undefined)?.id === me.id;
-    case 'admin':
-      return me.role === 'admin';
-  }
-}
+const meOf = (s: AppState) => s.employees.find((e) => e.id === s.currentUserId) ?? s.employees[0];
 
 /* ---------- Действия ---------- */
 
@@ -216,6 +55,7 @@ export interface ArticleInput {
   title: string;
   categoryId: string | null;
   content: string;
+  status: ArticleStatus;
 }
 export interface TaskInput {
   title: string;
@@ -240,32 +80,42 @@ export interface EmployeeInput {
   about: string;
 }
 
+/*
+ * Каждое действие само проверяет права текущего пользователя и при отказе ничего не меняет.
+ * Действия, возвращающие строку, при отказе возвращают null; остальные — false.
+ */
 interface Actions {
   switchUser: (id: string) => void;
   resetDemo: () => void;
-  saveArticle: (input: ArticleInput, id?: string) => string;
-  deleteArticle: (id: string) => void;
-  saveTask: (input: TaskInput, id?: string) => string;
-  setTaskStatus: (id: string, status: TaskStatus) => void;
-  deleteTask: (id: string) => void;
-  addTaskComment: (id: string, text: string) => void;
-  saveRequest: (input: RequestInput, id?: string) => string;
-  setRequestStatus: (id: string, status: RequestStatus) => void;
-  deleteRequest: (id: string) => void;
-  addRequestComment: (id: string, text: string) => void;
-  saveEmployee: (input: EmployeeInput, id?: string) => string;
-  setRole: (id: string, role: Role) => void;
-  deleteEmployee: (id: string) => void;
-  saveCategory: (name: string, id?: string) => void;
-  deleteCategory: (id: string) => void;
+  saveArticle: (input: ArticleInput, id?: string) => string | null;
+  setArticleStatus: (id: string, status: ArticleStatus) => boolean;
+  deleteArticle: (id: string) => boolean;
+  saveTask: (input: TaskInput, id?: string) => string | null;
+  setTaskStatus: (id: string, status: TaskStatus) => boolean;
+  deleteTask: (id: string) => boolean;
+  addTaskComment: (id: string, text: string) => boolean;
+  saveRequest: (input: RequestInput, id?: string) => string | null;
+  setRequestStatus: (id: string, status: RequestStatus) => boolean;
+  deleteRequest: (id: string) => boolean;
+  addRequestComment: (id: string, text: string) => boolean;
+  saveEmployee: (input: EmployeeInput, id?: string) => string | null;
+  setRole: (id: string, role: Role) => boolean;
+  setEmployeePermissions: (id: string, overrides: PermissionOverrides) => boolean;
+  deleteEmployee: (id: string) => boolean;
+  savePosition: (name: string, id?: string) => boolean;
+  setPositionPermissions: (id: string, overrides: PermissionOverrides) => boolean;
+  deletePosition: (id: string) => boolean;
+  saveCategory: (name: string, id?: string) => boolean;
+  deleteCategory: (id: string) => boolean;
 }
 
 interface Store {
   state: AppState;
   me: Employee;
+  /** Права текущего пользователя и проверки для интерфейса. */
+  access: Access;
   emp: (id: string | null | undefined) => Employee | undefined;
   empName: (id: string | null | undefined) => string;
-  can: (permission: Permission, target?: Article | Task | WorkRequest | Employee) => boolean;
   actions: Actions;
 }
 
@@ -283,6 +133,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const { toast } = useUi();
   const [state, setState] = useState<AppState>(load);
   const saveFailed = useRef(false);
+  // актуальное состояние для проверок прав внутри действий
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   useEffect(() => {
     try {
@@ -329,53 +182,102 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return { ...next, log: [entry, ...next.log].slice(0, LOG_LIMIT) };
       });
 
+    /** Текущее состояние и права текущего пользователя. */
+    const ctx = () => {
+      const s = stateRef.current;
+      return { s, acc: createAccess(s, meOf(s)) };
+    };
+    const deny = (what: string): false => {
+      toast(`Недостаточно прав: ${what}`, 'error');
+      return false;
+    };
     const nameOf = (s: AppState, id: string) => s.employees.find((e) => e.id === id)?.name ?? 'сотрудник';
 
     return {
+      // демо-управление: переключение пользователя и сброс доступны всем, это не вход по паролю
       switchUser: (id) =>
         apply(
-          (s) => ({ ...s, currentUserId: id }),
+          (s) => (s.employees.some((e) => e.id === id) ? { ...s, currentUserId: id } : s),
           'Система',
           (s) => `Демо-вход под пользователем ${nameOf(s, id)}`,
         ),
 
       resetDemo: () => setState(createSeed()),
 
+      /* ----- база знаний ----- */
+
       saveArticle: (input, id) => {
+        const { s, acc } = ctx();
+        const existing = id ? s.articles.find((a) => a.id === id) : undefined;
+        if (id && !existing) return null;
+        if (existing ? !acc.canEditArticle(existing) : !acc.has('kb.create')) {
+          return deny(existing ? 'редактирование статьи' : 'создание статей') || null;
+        }
+        // менять статус публикации может только тот, у кого есть право публикации
+        const status: ArticleStatus = acc.has('kb.publish') ? input.status : (existing?.status ?? 'draft');
         const articleId = id ?? uid();
         apply(
-          (s) => {
+          (prev) => {
             if (id) {
               return {
-                ...s,
-                articles: s.articles.map((a) => (a.id === id ? { ...a, ...input, updatedAt: now() } : a)),
+                ...prev,
+                articles: prev.articles.map((a) => (a.id === id ? { ...a, ...input, status, updatedAt: now() } : a)),
               };
             }
-            const created: Article = { id: articleId, ...input, authorId: s.currentUserId, createdAt: now(), updatedAt: now() };
-            return { ...s, articles: [created, ...s.articles] };
+            const created: Article = { id: articleId, ...input, status, authorId: prev.currentUserId, createdAt: now(), updatedAt: now() };
+            return { ...prev, articles: [created, ...prev.articles] };
           },
           'База знаний',
-          `${id ? 'Изменена' : 'Создана'} статья «${input.title}»`,
+          `${id ? 'Изменена' : 'Создана'} статья «${input.title}»${status === 'draft' ? ' (черновик)' : ''}`,
         );
         return articleId;
       },
 
-      deleteArticle: (id) =>
+      setArticleStatus: (id, status) => {
+        const { s, acc } = ctx();
+        const article = s.articles.find((a) => a.id === id);
+        if (!article) return false;
+        if (!acc.has('kb.publish')) return deny('публикация статей');
         apply(
-          (s) => ({ ...s, articles: s.articles.filter((a) => a.id !== id) }),
+          (prev) => ({ ...prev, articles: prev.articles.map((a) => (a.id === id ? { ...a, status, updatedAt: now() } : a)) }),
           'База знаний',
-          (s) => `Удалена статья «${s.articles.find((a) => a.id === id)?.title ?? ''}»`,
-        ),
+          `Статья «${article.title}» ${status === 'published' ? 'опубликована' : 'снята с публикации'}`,
+        );
+        return true;
+      },
+
+      deleteArticle: (id) => {
+        const { s, acc } = ctx();
+        const article = s.articles.find((a) => a.id === id);
+        if (!article) return false;
+        if (!acc.canDeleteArticle(article)) return deny('удаление статьи');
+        apply((prev) => ({ ...prev, articles: prev.articles.filter((a) => a.id !== id) }), 'База знаний', `Удалена статья «${article.title}»`);
+        return true;
+      },
+
+      /* ----- задачи ----- */
 
       saveTask: (input, id) => {
+        const { s, acc } = ctx();
+        const existing = id ? s.tasks.find((t) => t.id === id) : undefined;
+        if (id && !existing) return null;
+        if (existing ? !acc.canEditTask(existing) : !(acc.has('tasks.access') && acc.has('tasks.create'))) {
+          return deny(existing ? 'редактирование задачи' : 'создание задач') || null;
+        }
+        const me = acc.me;
+        // без права назначения исполнитель не меняется: новая задача — себе, существующая — как была
+        const assigneeId = acc.has('tasks.assign') ? input.assigneeId : existing ? existing.assigneeId : me.id;
+        // без права смены статуса статус не меняется: новая задача — «Новая»
+        const status = acc.has('tasks.status') ? input.status : existing ? existing.status : 'new';
+        const data = { ...input, assigneeId, status };
         const taskId = id ?? uid();
         apply(
-          (s) => {
+          (prev) => {
             if (id) {
-              return { ...s, tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...input, updatedAt: now() } : t)) };
+              return { ...prev, tasks: prev.tasks.map((t) => (t.id === id ? { ...t, ...data, updatedAt: now() } : t)) };
             }
-            const created: Task = { id: taskId, ...input, creatorId: s.currentUserId, comments: [], createdAt: now(), updatedAt: now() };
-            return { ...s, tasks: [created, ...s.tasks] };
+            const created: Task = { id: taskId, ...data, creatorId: prev.currentUserId, comments: [], createdAt: now(), updatedAt: now() };
+            return { ...prev, tasks: [created, ...prev.tasks] };
           },
           'Задачи',
           `${id ? 'Изменена' : 'Создана'} задача «${input.title}»`,
@@ -383,52 +285,71 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return taskId;
       },
 
-      setTaskStatus: (id, status) =>
+      setTaskStatus: (id, status) => {
+        const { s, acc } = ctx();
+        const task = s.tasks.find((t) => t.id === id);
+        if (!task) return false;
+        if (!acc.canChangeTaskStatus(task)) return deny('изменение статуса задачи');
+        if (task.status === status) return true;
         apply(
-          (s) => {
-            const task = s.tasks.find((t) => t.id === id);
-            if (!task || task.status === status) return s;
-            return { ...s, tasks: s.tasks.map((t) => (t.id === id ? { ...t, status, updatedAt: now() } : t)) };
-          },
+          (prev) => ({ ...prev, tasks: prev.tasks.map((t) => (t.id === id ? { ...t, status, updatedAt: now() } : t)) }),
           'Задачи',
-          (s) => `Задача «${s.tasks.find((t) => t.id === id)?.title ?? ''}»: статус «${TASK_STATUS[status].label}»`,
-        ),
+          `Задача «${task.title}»: статус «${TASK_STATUS[status].label}»`,
+        );
+        return true;
+      },
 
-      deleteTask: (id) =>
-        apply(
-          (s) => ({ ...s, tasks: s.tasks.filter((t) => t.id !== id) }),
-          'Задачи',
-          (s) => `Удалена задача «${s.tasks.find((t) => t.id === id)?.title ?? ''}»`,
-        ),
+      deleteTask: (id) => {
+        const { s, acc } = ctx();
+        const task = s.tasks.find((t) => t.id === id);
+        if (!task) return false;
+        if (!acc.canDeleteTask(task)) return deny('удаление задачи');
+        apply((prev) => ({ ...prev, tasks: prev.tasks.filter((t) => t.id !== id) }), 'Задачи', `Удалена задача «${task.title}»`);
+        return true;
+      },
 
-      addTaskComment: (id, text) =>
+      addTaskComment: (id, text) => {
+        const { s, acc } = ctx();
+        const task = s.tasks.find((t) => t.id === id);
+        if (!task) return false;
+        if (!acc.canCommentTask(task)) return deny('комментарии к задаче');
         apply(
-          (s) => ({
-            ...s,
-            tasks: s.tasks.map((t) =>
+          (prev) => ({
+            ...prev,
+            tasks: prev.tasks.map((t) =>
               t.id === id
-                ? { ...t, comments: [...t.comments, { id: uid(), authorId: s.currentUserId, text, createdAt: now() }], updatedAt: now() }
+                ? { ...t, comments: [...t.comments, { id: uid(), authorId: prev.currentUserId, text, createdAt: now() }], updatedAt: now() }
                 : t,
             ),
           }),
           'Задачи',
-          (s) => `Добавлен комментарий к задаче «${s.tasks.find((t) => t.id === id)?.title ?? ''}»`,
-        ),
+          `Добавлен комментарий к задаче «${task.title}»`,
+        );
+        return true;
+      },
+
+      /* ----- заявки ----- */
 
       saveRequest: (input, id) => {
+        const { s, acc } = ctx();
+        const existing = id ? s.requests.find((r) => r.id === id) : undefined;
+        if (id && !existing) return null;
+        if (existing ? !acc.canEditRequest(existing) : !acc.has('requests.access')) {
+          return deny(existing ? 'редактирование заявки' : 'создание заявок') || null;
+        }
         const requestId = id ?? uid();
         apply(
-          (s) => {
+          (prev) => {
             if (id) {
               return {
-                ...s,
-                requests: s.requests.map((r) =>
+                ...prev,
+                requests: prev.requests.map((r) =>
                   r.id === id
                     ? {
                         ...r,
                         ...input,
                         updatedAt: now(),
-                        history: [...r.history, { id: uid(), authorId: s.currentUserId, text: 'Заявка отредактирована', at: now() }],
+                        history: [...r.history, { id: uid(), authorId: prev.currentUserId, text: 'Заявка отредактирована', at: now() }],
                       }
                     : r,
                 ),
@@ -437,14 +358,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             const created: WorkRequest = {
               id: requestId,
               ...input,
-              authorId: s.currentUserId,
+              authorId: prev.currentUserId,
               status: 'new',
               comments: [],
-              history: [{ id: uid(), authorId: s.currentUserId, text: 'Заявка создана', at: now() }],
+              history: [{ id: uid(), authorId: prev.currentUserId, text: 'Заявка создана', at: now() }],
               createdAt: now(),
               updatedAt: now(),
             };
-            return { ...s, requests: [created, ...s.requests] };
+            return { ...prev, requests: [created, ...prev.requests] };
           },
           'Заявки',
           `${id ? 'Изменена' : 'Создана'} заявка «${input.title}»`,
@@ -452,64 +373,102 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return requestId;
       },
 
-      setRequestStatus: (id, status) =>
+      setRequestStatus: (id, status) => {
+        const { s, acc } = ctx();
+        const request = s.requests.find((r) => r.id === id);
+        if (!request) return false;
+        if (!acc.has('requests.decide')) return deny('решения по заявкам');
+        if (request.status === status) return true;
+        const text = `Статус изменён: «${REQUEST_STATUS[request.status].label}» → «${REQUEST_STATUS[status].label}»`;
         apply(
-          (s) => {
-            const request = s.requests.find((r) => r.id === id);
-            if (!request || request.status === status) return s;
-            const text = `Статус изменён: «${REQUEST_STATUS[request.status].label}» → «${REQUEST_STATUS[status].label}»`;
-            return {
-              ...s,
-              requests: s.requests.map((r) =>
-                r.id === id
-                  ? { ...r, status, updatedAt: now(), history: [...r.history, { id: uid(), authorId: s.currentUserId, text, at: now() }] }
-                  : r,
-              ),
-            };
-          },
+          (prev) => ({
+            ...prev,
+            requests: prev.requests.map((r) =>
+              r.id === id
+                ? { ...r, status, updatedAt: now(), history: [...r.history, { id: uid(), authorId: prev.currentUserId, text, at: now() }] }
+                : r,
+            ),
+          }),
           'Заявки',
-          (s) => `Заявка «${s.requests.find((r) => r.id === id)?.title ?? ''}»: статус «${REQUEST_STATUS[status].label}»`,
-        ),
+          `Заявка «${request.title}»: статус «${REQUEST_STATUS[status].label}»`,
+        );
+        return true;
+      },
 
-      deleteRequest: (id) =>
-        apply(
-          (s) => ({ ...s, requests: s.requests.filter((r) => r.id !== id) }),
-          'Заявки',
-          (s) => `Удалена заявка «${s.requests.find((r) => r.id === id)?.title ?? ''}»`,
-        ),
+      deleteRequest: (id) => {
+        const { s, acc } = ctx();
+        const request = s.requests.find((r) => r.id === id);
+        if (!request) return false;
+        if (!acc.canDeleteRequest(request)) return deny('удаление заявки');
+        apply((prev) => ({ ...prev, requests: prev.requests.filter((r) => r.id !== id) }), 'Заявки', `Удалена заявка «${request.title}»`);
+        return true;
+      },
 
-      addRequestComment: (id, text) =>
+      addRequestComment: (id, text) => {
+        const { s, acc } = ctx();
+        const request = s.requests.find((r) => r.id === id);
+        if (!request) return false;
+        if (!acc.canViewRequest(request)) return deny('комментарии к заявке');
         apply(
-          (s) => ({
-            ...s,
-            requests: s.requests.map((r) =>
+          (prev) => ({
+            ...prev,
+            requests: prev.requests.map((r) =>
               r.id === id
                 ? {
                     ...r,
                     updatedAt: now(),
-                    comments: [...r.comments, { id: uid(), authorId: s.currentUserId, text, createdAt: now() }],
-                    history: [...r.history, { id: uid(), authorId: s.currentUserId, text: 'Добавлен комментарий', at: now() }],
+                    comments: [...r.comments, { id: uid(), authorId: prev.currentUserId, text, createdAt: now() }],
+                    history: [...r.history, { id: uid(), authorId: prev.currentUserId, text: 'Добавлен комментарий', at: now() }],
                   }
                 : r,
             ),
           }),
           'Заявки',
-          (s) => `Добавлен комментарий к заявке «${s.requests.find((r) => r.id === id)?.title ?? ''}»`,
-        ),
+          `Добавлен комментарий к заявке «${request.title}»`,
+        );
+        return true;
+      },
+
+      /* ----- сотрудники, должности, права ----- */
 
       saveEmployee: (input, id) => {
+        const { s, acc } = ctx();
+        const existing = id ? s.employees.find((e) => e.id === id) : undefined;
+        if (id && !existing) return null;
+        const manage = acc.has('employees.manage');
+        if (existing ? !acc.canEditProfile(existing) : !manage) {
+          return deny(existing ? 'изменение данных сотрудника' : 'добавление сотрудников') || null;
+        }
+        if (input.position && !s.positions.some((p) => p.name === input.position)) {
+          toast('Выберите должность из списка', 'error');
+          return null;
+        }
+        // без права управления сотрудниками можно изменить только свои контакты и «О себе»
+        let data: Partial<Employee> = manage ? { ...input } : { phone: input.phone, about: input.about };
+        // роль меняется только при праве назначения ролей и не у самого себя
+        const roleAllowed = existing
+          ? acc.canManageAccessOf(existing) && acc.canAssignRole(input.role)
+          : acc.has('access.manage') && acc.canAssignRole(input.role);
+        if (!roleAllowed) {
+          const { role: _role, ...rest } = data;
+          data = rest;
+        }
+        if (existing && data.role && existing.role === 'admin' && data.role !== 'admin' && s.employees.filter((e) => e.role === 'admin').length === 1) {
+          toast('В портале должен остаться хотя бы один администратор', 'error');
+          return null;
+        }
         const employeeId = id ?? uid();
         apply(
-          (s) => {
-            if (id) {
-              return { ...s, employees: s.employees.map((e) => (e.id === id ? { ...e, ...input } : e)) };
-            }
+          (prev) => {
+            if (id) return { ...prev, employees: prev.employees.map((e) => (e.id === id ? { ...e, ...data } : e)) };
             const created: Employee = {
               id: employeeId,
               ...input,
+              role: roleAllowed ? input.role : 'employee',
               hiredAt: now().slice(0, 10),
+              permissions: {},
             };
-            return { ...s, employees: [...s.employees, created] };
+            return { ...prev, employees: [...prev.employees, created] };
           },
           'Администрирование',
           `${id ? 'Изменены данные сотрудника' : 'Добавлен сотрудник'} ${input.name}`,
@@ -517,51 +476,163 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return employeeId;
       },
 
-      setRole: (id, role) =>
+      setRole: (id, role) => {
+        const { s, acc } = ctx();
+        const target = s.employees.find((e) => e.id === id);
+        if (!target) return false;
+        if (!acc.canManageAccessOf(target) || !acc.canAssignRole(role)) {
+          return deny(target.id === acc.me.id ? 'изменение собственной роли' : 'назначение этой роли');
+        }
+        if (target.role === 'admin' && role !== 'admin' && s.employees.filter((e) => e.role === 'admin').length === 1) {
+          toast('В портале должен остаться хотя бы один администратор', 'error');
+          return false;
+        }
         apply(
-          (s) => ({ ...s, employees: s.employees.map((e) => (e.id === id ? { ...e, role } : e)) }),
+          (prev) => ({ ...prev, employees: prev.employees.map((e) => (e.id === id ? { ...e, role } : e)) }),
           'Администрирование',
-          (s) => `Сотруднику ${nameOf(s, id)} назначена роль «${ROLE[role].label}»`,
-        ),
+          `Сотруднику ${target.name} назначена роль «${ROLE[role].label}»`,
+        );
+        return true;
+      },
 
-      deleteEmployee: (id) =>
+      setEmployeePermissions: (id, overrides) => {
+        const { s, acc } = ctx();
+        const target = s.employees.find((e) => e.id === id);
+        if (!target) return false;
+        if (!acc.canManageAccessOf(target)) {
+          return deny(target.id === acc.me.id ? 'изменение собственных прав' : 'изменение прав сотрудника');
+        }
+        const next = cleanOverrides(overrides);
+        const forbidden = forbiddenGrants(acc, next, target.permissions);
+        if (forbidden.length) return deny(`выдача прав, которых нет у вас: ${forbidden.map((p) => PERMISSION_LABEL[p]).join(', ')}`);
         apply(
-          (s) => {
-            if (id === s.currentUserId) return s;
+          (prev) => ({ ...prev, employees: prev.employees.map((e) => (e.id === id ? { ...e, permissions: next } : e)) }),
+          'Администрирование',
+          `Изменены индивидуальные права: ${target.name}`,
+        );
+        return true;
+      },
+
+      deleteEmployee: (id) => {
+        const { s, acc } = ctx();
+        const target = s.employees.find((e) => e.id === id);
+        if (!target) return false;
+        if (!acc.canDeleteEmployee(target)) return deny(target.id === acc.me.id ? 'удаление самого себя' : 'удаление сотрудника');
+        if (target.role === 'admin' && s.employees.filter((e) => e.role === 'admin').length === 1) {
+          toast('В портале должен остаться хотя бы один администратор', 'error');
+          return false;
+        }
+        apply(
+          (prev) => ({
+            ...prev,
+            employees: prev.employees.filter((e) => e.id !== id),
+            tasks: prev.tasks.map((t) => (t.assigneeId === id ? { ...t, assigneeId: null } : t)),
+          }),
+          'Администрирование',
+          `Удалён сотрудник ${target.name}`,
+        );
+        return true;
+      },
+
+      savePosition: (name, id) => {
+        const { s, acc } = ctx();
+        if (!acc.has('employees.manage')) return deny('управление должностями');
+        const value = name.trim();
+        if (!value) return false;
+        if (s.positions.some((p) => p.id !== id && p.name.toLowerCase() === value.toLowerCase())) {
+          toast('Такая должность уже есть', 'error');
+          return false;
+        }
+        const old = id ? s.positions.find((p) => p.id === id) : undefined;
+        if (id && !old) return false;
+        apply(
+          (prev) => {
+            if (!old) return { ...prev, positions: [...prev.positions, { id: uid(), name: value, permissions: {} }] };
+            // переименование должности переносится на сотрудников
             return {
-              ...s,
-              employees: s.employees.filter((e) => e.id !== id),
-              tasks: s.tasks.map((t) => (t.assigneeId === id ? { ...t, assigneeId: null } : t)),
+              ...prev,
+              positions: prev.positions.map((p) => (p.id === id ? { ...p, name: value } : p)),
+              employees: prev.employees.map((e) => (e.position === old.name ? { ...e, position: value } : e)),
             };
           },
           'Администрирование',
-          (s) => `Удалён сотрудник ${nameOf(s, id)}`,
-        ),
+          old ? `Должность «${old.name}» переименована в «${value}»` : `Добавлена должность «${value}»`,
+        );
+        return true;
+      },
 
-      saveCategory: (name, id) =>
+      setPositionPermissions: (id, overrides) => {
+        const { s, acc } = ctx();
+        const position = s.positions.find((p) => p.id === id);
+        if (!position) return false;
+        if (!acc.has('access.manage')) return deny('изменение прав должности');
+        const next = cleanOverrides(overrides);
+        const forbidden = forbiddenGrants(acc, next, position.permissions);
+        if (forbidden.length) return deny(`выдача прав, которых нет у вас: ${forbidden.map((p) => PERMISSION_LABEL[p]).join(', ')}`);
         apply(
-          (s) =>
+          (prev) => ({ ...prev, positions: prev.positions.map((p) => (p.id === id ? { ...p, permissions: next } : p)) }),
+          'Администрирование',
+          `Изменены права должности «${position.name}»`,
+        );
+        return true;
+      },
+
+      deletePosition: (id) => {
+        const { s, acc } = ctx();
+        const position = s.positions.find((p) => p.id === id);
+        if (!position) return false;
+        if (!acc.has('employees.manage')) return deny('управление должностями');
+        if (s.employees.some((e) => e.position === position.name)) {
+          toast('Сначала назначьте сотрудникам с этой должностью другую', 'error');
+          return false;
+        }
+        apply((prev) => ({ ...prev, positions: prev.positions.filter((p) => p.id !== id) }), 'Администрирование', `Удалена должность «${position.name}»`);
+        return true;
+      },
+
+      /* ----- категории ----- */
+
+      saveCategory: (name, id) => {
+        const { acc } = ctx();
+        if (!acc.has('kb.categories')) return deny('управление категориями');
+        apply(
+          (prev) =>
             id
-              ? { ...s, categories: s.categories.map((c) => (c.id === id ? { ...c, name } : c)) }
-              : { ...s, categories: [...s.categories, { id: uid(), name }] },
+              ? { ...prev, categories: prev.categories.map((c) => (c.id === id ? { ...c, name } : c)) }
+              : { ...prev, categories: [...prev.categories, { id: uid(), name }] },
           'Администрирование',
           `${id ? 'Переименована' : 'Добавлена'} категория «${name}»`,
-        ),
+        );
+        return true;
+      },
 
-      deleteCategory: (id) =>
+      deleteCategory: (id) => {
+        const { s, acc } = ctx();
+        if (!acc.has('kb.categories')) return deny('управление категориями');
+        const category = s.categories.find((c) => c.id === id);
+        if (!category) return false;
         apply(
-          (s) => ({
-            ...s,
-            categories: s.categories.filter((c) => c.id !== id),
-            articles: s.articles.map((a) => (a.categoryId === id ? { ...a, categoryId: null } : a)),
+          (prev) => ({
+            ...prev,
+            categories: prev.categories.filter((c) => c.id !== id),
+            articles: prev.articles.map((a) => (a.categoryId === id ? { ...a, categoryId: null } : a)),
           }),
           'Администрирование',
-          (s) => `Удалена категория «${s.categories.find((c) => c.id === id)?.name ?? ''}»`,
-        ),
+          `Удалена категория «${category.name}»`,
+        );
+        return true;
+      },
     };
-  }, []);
+  }, [toast]);
 
-  const me = state.employees.find((e) => e.id === state.currentUserId) ?? state.employees[0];
+  // Только в режиме разработки: доступ к действиям из консоли для проверки, что запреты срабатывают и в обход интерфейса.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __portal?: unknown }).__portal = { actions, getState: () => stateRef.current };
+  }, [actions]);
+
+  const me = meOf(state);
+  const access = useMemo(() => createAccess(state, me), [state, me]);
 
   const emp = useCallback(
     (id: string | null | undefined) => (id ? state.employees.find((e) => e.id === id) : undefined),
@@ -571,9 +642,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     (id: string | null | undefined) => (id ? (emp(id)?.name ?? 'Удалённый сотрудник') : 'Не назначен'),
     [emp],
   );
-  const can = useCallback<Store['can']>((permission, target) => check(me, permission, target), [me]);
 
-  const value = useMemo(() => ({ state, me, emp, empName, can, actions }), [state, me, emp, empName, can, actions]);
+  const value = useMemo(() => ({ state, me, access, emp, empName, actions }), [state, me, access, emp, empName, actions]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }

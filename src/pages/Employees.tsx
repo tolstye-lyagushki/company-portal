@@ -6,6 +6,7 @@ import { useStore } from '../store';
 import { ROLE, ROLE_ORDER, TASK_STATUS, byName, dueLabel, formatDate, matches, plural, today } from '../lib/utils';
 import { Avatar, Badge, Button, EmptyState } from '../components/ui';
 import { EmployeeForm } from '../components/EmployeeForm';
+import { AccessDenied } from '../components/AccessDenied';
 
 export function EmployeeList() {
   const { state } = useStore();
@@ -96,10 +97,12 @@ export function EmployeeList() {
 
 export function EmployeeProfile() {
   const { id } = useParams();
-  const { state, me, can, emp } = useStore();
+  const { state, me, access, emp } = useStore();
   const [editing, setEditing] = useState(false);
   const person = emp(id);
 
+  // свой профиль доступен всегда, чужие — при праве на справочник сотрудников
+  if (person && !access.canViewProfile(person)) return <AccessDenied section="Сотрудники" />;
   if (!person) {
     return (
       <div className="card">
@@ -109,18 +112,26 @@ export function EmployeeProfile() {
   }
 
   const now = today();
+  // в профиле только те задачи и статьи, которые текущему пользователю разрешено видеть
+  const showTasks = access.has('tasks.access');
   const tasks = state.tasks
-    .filter((t) => t.assigneeId === person.id && t.status !== 'done')
+    .filter((t) => t.assigneeId === person.id && t.status !== 'done' && access.canViewTask(t))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-  const articles = state.articles.filter((a) => a.authorId === person.id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const articles = state.articles
+    .filter((a) => a.authorId === person.id && access.canViewArticle(a))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   return (
     <>
       <div className="article-top">
-        <Link to="/people" className="back-link">
-          <ArrowLeft size={16} /> Сотрудники
-        </Link>
-        {can('employee.edit', person) && (
+        {access.has('employees.view') ? (
+          <Link to="/people" className="back-link">
+            <ArrowLeft size={16} /> Сотрудники
+          </Link>
+        ) : (
+          <span />
+        )}
+        {access.canEditProfile(person) && (
           <Button onClick={() => setEditing(true)}>
             <Pencil size={16} /> Редактировать
           </Button>
@@ -152,6 +163,7 @@ export function EmployeeProfile() {
       </div>
 
       <div className="home-grid">
+        {showTasks && (
         <section className="card">
           <div className="card-head">
             <h2 className="card-title">Открытые задачи · {tasks.length}</h2>
@@ -172,8 +184,9 @@ export function EmployeeProfile() {
             </div>
           )}
         </section>
+        )}
 
-        <section className="card">
+        <section className={`card${showTasks ? '' : ' span-all'}`}>
           <div className="card-head">
             <h2 className="card-title">Статьи в базе знаний · {articles.length}</h2>
           </div>
@@ -194,7 +207,7 @@ export function EmployeeProfile() {
         </section>
       </div>
 
-      {editing && <EmployeeForm employee={person} restricted={!can('admin')} onClose={() => setEditing(false)} />}
+      {editing && <EmployeeForm employee={person} onClose={() => setEditing(false)} />}
     </>
   );
 }

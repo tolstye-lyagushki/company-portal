@@ -1,5 +1,17 @@
-import type { AppState, Article, Comment, Employee, HistoryEntry, LogEntry, Task, WorkRequest } from '../types';
-import { addDays, today } from '../lib/utils';
+import type {
+  AppState,
+  Article,
+  Comment,
+  Employee,
+  HistoryEntry,
+  LogEntry,
+  PermissionOverrides,
+  Position,
+  Task,
+  WorkRequest,
+} from '../types';
+// расширение .ts в пути нужно, чтобы модуль запускался и в тестах под Node.js
+import { addDays, today } from '../lib/utils.ts';
 
 /*
  * Демонстрационный набор данных. Все люди, адреса и телефоны вымышлены:
@@ -7,8 +19,11 @@ import { addDays, today } from '../lib/utils';
  * Даты считаются от текущего дня, чтобы прототип всегда выглядел «живым».
  */
 
-/** Версия формата данных. 2 — графики смен удалены (см. migrate в store.tsx). */
-export const SEED_VERSION = 2;
+/**
+ * Версия формата данных (см. lib/migrate.ts).
+ * 2 — графики смен удалены; 3 — роли с правами, должности, статус публикации статей.
+ */
+export const SEED_VERSION = 3;
 
 const at = (daysAgo: number, hour = 10, minute = 0) => {
   const d = new Date();
@@ -27,6 +42,7 @@ function employee(
   login: string,
   hiredAt: string,
   about: string,
+  permissions: PermissionOverrides = {},
 ): Employee {
   const n = id.replace('e', '').padStart(2, '0');
   return {
@@ -39,22 +55,44 @@ function employee(
     phone: `+7 (000) 555-01-${n}`,
     hiredAt,
     about,
+    permissions,
   };
 }
+
+/*
+ * Должности и их права поверх роли. По умолчанию у сотрудников задачника нет —
+ * доступ выдаётся должностям, где он нужен, а маркетологу — индивидуально (см. e12).
+ */
+export const SEED_POSITIONS: Position[] = [
+  { id: 'p1', name: 'Генеральный директор', permissions: {} },
+  { id: 'p2', name: 'Системный администратор', permissions: {} },
+  { id: 'p3', name: 'Руководитель отдела продаж', permissions: { 'kb.create': true } },
+  { id: 'p4', name: 'Руководитель службы логистики', permissions: {} },
+  { id: 'p5', name: 'HR-менеджер', permissions: { 'tasks.access': true, 'tasks.status': true } },
+  { id: 'p6', name: 'Менеджер по продажам', permissions: { 'tasks.access': true, 'tasks.create': true, 'tasks.status': true } },
+  { id: 'p7', name: 'Специалист поддержки', permissions: { 'tasks.access': true, 'tasks.status': true } },
+  { id: 'p8', name: 'Кладовщик', permissions: { 'tasks.access': true, 'tasks.status': true } },
+  { id: 'p9', name: 'Бухгалтер', permissions: { 'tasks.access': true, 'tasks.status': true } },
+  { id: 'p10', name: 'Маркетолог', permissions: {} },
+];
 
 const employees: Employee[] = [
   employee('e1', 'Анна Соколова', 'Генеральный директор', 'Руководство', 'manager', 'a.sokolova', '2016-03-01', 'Отвечает за стратегию и развитие компании. Приёмные часы — вторник и четверг после 15:00.'),
   employee('e2', 'Дмитрий Орлов', 'Системный администратор', 'ИТ', 'admin', 'd.orlov', '2018-09-10', 'Доступы, оборудование, почта и портал. По срочным вопросам лучше писать заявку с категорией «Доступы».'),
   employee('e3', 'Марина Ковалёва', 'Руководитель отдела продаж', 'Продажи', 'manager', 'm.kovaleva', '2017-05-15', 'Ведёт ключевых клиентов и согласует коммерческие предложения.'),
   employee('e4', 'Игорь Лебедев', 'Руководитель службы логистики', 'Логистика', 'manager', 'i.lebedev', '2019-02-04', 'Склад, приёмка и отгрузки. Отвечает за договоры с перевозчиками.'),
-  employee('e5', 'Елена Морозова', 'HR-менеджер', 'Персонал', 'employee', 'e.morozova', '2020-01-20', 'Отпуска, справки, адаптация новых сотрудников.'),
+  employee('e5', 'Елена Морозова', 'HR-менеджер', 'Персонал', 'editor', 'e.morozova', '2020-01-20', 'Отпуска, справки, адаптация новых сотрудников.'),
   employee('e6', 'Сергей Никитин', 'Менеджер по продажам', 'Продажи', 'employee', 's.nikitin', '2021-06-07', 'Работает с розничными сетями.'),
   employee('e7', 'Ольга Фёдорова', 'Менеджер по продажам', 'Продажи', 'employee', 'o.fedorova', '2022-03-14', 'Работает с корпоративными клиентами.'),
   employee('e8', 'Павел Зайцев', 'Специалист поддержки', 'Поддержка', 'employee', 'p.zaitsev', '2021-11-01', 'Первая линия поддержки клиентов.'),
   employee('e9', 'Наталья Белова', 'Специалист поддержки', 'Поддержка', 'employee', 'n.belova', '2022-08-22', 'Первая линия поддержки клиентов.'),
   employee('e10', 'Артём Громов', 'Кладовщик', 'Логистика', 'employee', 'a.gromov', '2023-04-03', 'Приёмка и комплектация заказов.'),
   employee('e11', 'Виктория Павлова', 'Бухгалтер', 'Финансы', 'employee', 'v.pavlova', '2019-10-28', 'Счета, акты, авансовые отчёты.'),
-  employee('e12', 'Максим Егоров', 'Маркетолог', 'Маркетинг', 'employee', 'm.egorov', '2023-09-18', 'Сайт, рассылки и рекламные кампании.'),
+  employee('e12', 'Максим Егоров', 'Маркетолог', 'Маркетинг', 'employee', 'm.egorov', '2023-09-18', 'Сайт, рассылки и рекламные кампании.', {
+    'tasks.access': true,
+    'tasks.create': true,
+    'tasks.status': true,
+  }),
 ];
 
 const categories = [
@@ -75,8 +113,9 @@ function article(
   createdDaysAgo: number,
   updatedDaysAgo: number,
   content: string,
+  status: Article['status'] = 'published',
 ): Article {
-  return { id, title, categoryId, authorId, content, createdAt: at(createdDaysAgo, 11), updatedAt: at(updatedDaysAgo, 14, 30) };
+  return { id, title, categoryId, authorId, content, status, createdAt: at(createdDaysAgo, 11), updatedAt: at(updatedDaysAgo, 14, 30) };
 }
 
 const articles: Article[] = [
@@ -102,6 +141,9 @@ const articles: Article[] = [
     '<p>Первый звонок задаёт тон всей работе с клиентом.</p><h2>Структура разговора</h2><ol><li>Представьтесь и назовите компанию.</li><li>Уточните, удобно ли говорить.</li><li>Задайте два-три вопроса о задачах клиента.</li><li>Предложите следующий шаг: встречу или коммерческое предложение.</li></ol><p>После звонка внесите итог в карточку клиента и поставьте себе задачу на следующий контакт.</p>'),
   article('a11', 'Приёмка товара на складе', 'c2', 'e4', 25, 4,
     '<p>Приёмка проводится в день поступления товара.</p><ol><li>Сверьте количество мест с транспортной накладной.</li><li>Проверьте целостность упаковки.</li><li>Пересчитайте товар и сверьте с документами поставщика.</li><li>Оформите расхождения актом и сообщите руководителю службы.</li></ol><p>Товар без документов на хранение не принимается.</p>'),
+  article('a12', 'Как оформить командировку', 'c4', 'e5', 1, 0,
+    '<p>Черновик: порядок оформления командировки.</p><ol><li>Согласуйте поездку с руководителем.</li><li>Создайте заявку с категорией «Справки и документы».</li><li>После поездки сдайте авансовый отчёт в бухгалтерию в течение трёх рабочих дней.</li></ol>',
+    'draft'),
 ];
 
 const comment = (id: string, authorId: string, daysAgo: number, text: string, hour = 12): Comment => ({
@@ -258,6 +300,7 @@ export function createSeed(): AppState {
     version: SEED_VERSION,
     currentUserId: 'e1',
     employees: structuredClone(employees),
+    positions: structuredClone(SEED_POSITIONS),
     categories: structuredClone(categories),
     requestCategories: [...requestCategories],
     articles: structuredClone(articles),

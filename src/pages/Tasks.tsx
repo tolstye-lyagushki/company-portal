@@ -22,9 +22,11 @@ import { Comments } from '../components/Comments';
 const VIEW_KEY = 'company-portal:tasks-view';
 
 function TaskForm({ task, onClose }: { task?: Task; onClose: () => void }) {
-  const { state, me, actions } = useStore();
+  const { state, me, access, actions } = useStore();
   const { toast } = useUi();
   const navigate = useNavigate();
+  const canAssign = access.has('tasks.assign');
+  const canStatus = access.has('tasks.status');
   const [form, setForm] = useState<TaskInput>({
     title: task?.title ?? '',
     description: task?.description ?? '',
@@ -40,6 +42,7 @@ function TaskForm({ task, onClose }: { task?: Task; onClose: () => void }) {
     if (!form.title.trim()) return setError('Укажите название задачи');
     if (!form.dueDate) return setError('Укажите срок выполнения');
     const id = actions.saveTask({ ...form, title: form.title.trim(), description: form.description.trim() }, task?.id);
+    if (!id) return;
     toast(task ? 'Задача сохранена' : 'Задача создана');
     onClose();
     if (!task) navigate(`/tasks/${id}`);
@@ -75,8 +78,13 @@ function TaskForm({ task, onClose }: { task?: Task; onClose: () => void }) {
         <Field label="Описание" className="span-2">
           <textarea className="textarea" rows={4} value={form.description} placeholder="Подробности, ожидаемый результат" onChange={(e) => set('description', e.target.value)} />
         </Field>
-        <Field label="Ответственный">
-          <select className="select" value={form.assigneeId ?? ''} onChange={(e) => set('assigneeId', e.target.value || null)}>
+        <Field label="Ответственный" hint={canAssign ? undefined : 'Назначать исполнителей могут сотрудники с правом «Назначение исполнителей»'}>
+          <select
+            className="select"
+            value={form.assigneeId ?? ''}
+            disabled={!canAssign}
+            onChange={(e) => set('assigneeId', e.target.value || null)}
+          >
             <option value="">Не назначен</option>
             {[...state.employees].sort(byName).map((e) => (
               <option key={e.id} value={e.id}>{e.name}</option>
@@ -101,13 +109,15 @@ function TaskForm({ task, onClose }: { task?: Task; onClose: () => void }) {
             ))}
           </select>
         </Field>
-        <Field label="Статус">
-          <select className="select" value={form.status} onChange={(e) => set('status', e.target.value as TaskStatus)}>
-            {TASK_STATUS_ORDER.map((s) => (
-              <option key={s} value={s}>{TASK_STATUS[s].label}</option>
-            ))}
-          </select>
-        </Field>
+        {canStatus && (
+          <Field label="Статус">
+            <select className="select" value={form.status} onChange={(e) => set('status', e.target.value as TaskStatus)}>
+              {TASK_STATUS_ORDER.map((s) => (
+                <option key={s} value={s}>{TASK_STATUS[s].label}</option>
+              ))}
+            </select>
+          </Field>
+        )}
       </div>
       {error && <div className="form-error" role="alert">{error}</div>}
     </Modal>
@@ -115,10 +125,12 @@ function TaskForm({ task, onClose }: { task?: Task; onClose: () => void }) {
 }
 
 function TaskDetails({ task, onClose, onEdit }: { task: Task; onClose: () => void; onEdit: () => void }) {
-  const { actions, can, emp, empName } = useStore();
+  const { actions, access, emp, empName } = useStore();
   const { confirm, toast } = useUi();
   const assignee = emp(task.assigneeId);
   const overdue = task.status !== 'done' && task.dueDate < today();
+  const canEdit = access.canEditTask(task);
+  const canDelete = access.canDeleteTask(task);
 
   const remove = async () => {
     const ok = await confirm({
@@ -128,7 +140,7 @@ function TaskDetails({ task, onClose, onEdit }: { task: Task; onClose: () => voi
       danger: true,
     });
     if (!ok) return;
-    actions.deleteTask(task.id);
+    if (!actions.deleteTask(task.id)) return;
     toast('Задача удалена');
     onClose();
   };
@@ -139,14 +151,18 @@ function TaskDetails({ task, onClose, onEdit }: { task: Task; onClose: () => voi
       size="lg"
       onClose={onClose}
       footer={
-        can('task.edit', task) ? (
+        canEdit || canDelete ? (
           <>
-            <Button variant="danger" onClick={remove}>
-              <Trash2 size={16} /> Удалить
-            </Button>
-            <Button onClick={onEdit}>
-              <Pencil size={16} /> Редактировать
-            </Button>
+            {canDelete && (
+              <Button variant="danger" onClick={remove}>
+                <Trash2 size={16} /> Удалить
+              </Button>
+            )}
+            {canEdit && (
+              <Button onClick={onEdit}>
+                <Pencil size={16} /> Редактировать
+              </Button>
+            )}
           </>
         ) : undefined
       }
@@ -154,15 +170,14 @@ function TaskDetails({ task, onClose, onEdit }: { task: Task; onClose: () => voi
       <div className="kv">
         <div>
           <div className="kv-label">Статус</div>
-          {can('task.status', task) ? (
+          {access.canChangeTaskStatus(task) ? (
             <select
               className="select select-sm"
               aria-label="Статус задачи"
               value={task.status}
               onChange={(e) => {
                 const status = e.target.value as TaskStatus;
-                actions.setTaskStatus(task.id, status);
-                toast(`Статус: ${TASK_STATUS[status].label.toLowerCase()}`);
+                if (actions.setTaskStatus(task.id, status)) toast(`Статус: ${TASK_STATUS[status].label.toLowerCase()}`);
               }}
             >
               {TASK_STATUS_ORDER.map((s) => (
@@ -215,9 +230,11 @@ function TaskDetails({ task, onClose, onEdit }: { task: Task; onClose: () => voi
 
 export default function Tasks() {
   const { id } = useParams();
-  const { state, me, empName } = useStore();
+  const { state, me, access, empName } = useStore();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
+  const canCreate = access.has('tasks.create');
+  const viewAll = access.has('tasks.viewAll');
 
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | 'open' | TaskStatus>('all');
@@ -243,17 +260,20 @@ export default function Tasks() {
 
   useEffect(() => {
     if (params.get('new')) {
-      setCreating(true);
+      if (canCreate) setCreating(true);
       setParams({}, { replace: true });
     }
-  }, [params, setParams]);
+  }, [params, setParams, canCreate]);
 
-  const selected = id ? state.tasks.find((t) => t.id === id) : undefined;
+  const found = id ? state.tasks.find((t) => t.id === id) : undefined;
+  // чужая задача без права «Просмотр всех задач» не открывается даже по прямой ссылке
+  const selected = found && access.canViewTask(found) ? found : undefined;
   const now = today();
 
   const tasks = useMemo(
     () =>
       state.tasks
+        .filter(access.canViewTask)
         .filter((t) => (status === 'all' ? true : status === 'open' ? t.status !== 'done' : t.status === status))
         .filter((t) => {
           if (assignee === 'all') return true;
@@ -263,7 +283,7 @@ export default function Tasks() {
         })
         .filter((t) => matches(query, t.title, t.description))
         .sort((a, b) => Number(a.status === 'done') - Number(b.status === 'done') || a.dueDate.localeCompare(b.dueDate)),
-    [state.tasks, status, assignee, query, me.id],
+    [state.tasks, status, assignee, query, me.id, access],
   );
 
   const filtered = status !== 'all' || assignee !== 'all' || query.trim() !== '';
@@ -282,11 +302,15 @@ export default function Tasks() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Задачи</h1>
-          <p className="page-sub">Поручения с ответственными, сроками и приоритетами</p>
+          <p className="page-sub">
+            {viewAll ? 'Поручения с ответственными, сроками и приоритетами' : 'Ваши задачи: назначенные вам и поставленные вами'}
+          </p>
         </div>
-        <Button variant="primary" onClick={() => setCreating(true)}>
-          <Plus size={16} /> Новая задача
-        </Button>
+        {canCreate && (
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            <Plus size={16} /> Новая задача
+          </Button>
+        )}
       </div>
 
       <div className="toolbar">
@@ -302,12 +326,13 @@ export default function Tasks() {
           ))}
         </select>
         <select className="select" aria-label="Ответственный" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
-          <option value="all">Все ответственные</option>
-          <option value="me">Мои задачи</option>
-          <option value="none">Не назначен</option>
-          {[...state.employees].sort(byName).map((e) => (
-            <option key={e.id} value={e.id}>{e.name}</option>
-          ))}
+          <option value="all">{viewAll ? 'Все ответственные' : 'Все мои задачи'}</option>
+          <option value="me">Назначены мне</option>
+          {viewAll && <option value="none">Не назначен</option>}
+          {viewAll &&
+            [...state.employees].sort(byName).map((e) => (
+              <option key={e.id} value={e.id}>{e.name}</option>
+            ))}
         </select>
         <Segmented
           label="Вид"
@@ -325,8 +350,14 @@ export default function Tasks() {
           <EmptyState
             icon={<ListChecks size={22} />}
             title={filtered ? 'Задачи не найдены' : 'Задач пока нет'}
-            text={filtered ? 'Измените условия поиска или фильтры.' : 'Создайте первую задачу.'}
-            action={filtered ? <Button onClick={resetFilters}>Сбросить фильтры</Button> : <Button variant="primary" onClick={() => setCreating(true)}>Новая задача</Button>}
+            text={filtered ? 'Измените условия поиска или фильтры.' : canCreate ? 'Создайте первую задачу.' : 'Задачи, назначенные вам, появятся здесь.'}
+            action={
+              filtered ? (
+                <Button onClick={resetFilters}>Сбросить фильтры</Button>
+              ) : canCreate ? (
+                <Button variant="primary" onClick={() => setCreating(true)}>Новая задача</Button>
+              ) : undefined
+            }
           />
         </div>
       ) : view === 'list' ? (
@@ -382,13 +413,20 @@ export default function Tasks() {
       )}
 
       {id && !selected && (
-        <Modal title="Задача не найдена" size="sm" onClose={() => navigate('/tasks')} footer={<Button variant="primary" onClick={() => navigate('/tasks')}>К списку задач</Button>}>
-          <p className="confirm-text">Возможно, задачу удалили.</p>
+        <Modal
+          title={found ? 'Нет доступа к задаче' : 'Задача не найдена'}
+          size="sm"
+          onClose={() => navigate('/tasks')}
+          footer={<Button variant="primary" onClick={() => navigate('/tasks')}>К списку задач</Button>}
+        >
+          <p className="confirm-text">
+            {found ? 'Вам доступны только свои задачи: назначенные вам или поставленные вами.' : 'Возможно, задачу удалили.'}
+          </p>
         </Modal>
       )}
       {selected && !editing && <TaskDetails task={selected} onClose={() => navigate('/tasks')} onEdit={() => setEditing(true)} />}
       {selected && editing && <TaskForm task={selected} onClose={() => setEditing(false)} />}
-      {creating && <TaskForm onClose={() => setCreating(false)} />}
+      {creating && canCreate && <TaskForm onClose={() => setCreating(false)} />}
     </>
   );
 }

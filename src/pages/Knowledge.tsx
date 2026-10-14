@@ -1,10 +1,12 @@
 import { Suspense, lazy, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import DOMPurify from 'dompurify';
-import { ArrowLeft, BookOpen, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, BookOpen, EyeOff, Pencil, Plus, Search, Send, Trash2 } from 'lucide-react';
+import type { ArticleStatus } from '../types';
 import { useStore } from '../store';
 import { excerpt, formatDate, formatDateTime, matches, stripHtml } from '../lib/utils';
 import { Avatar, Badge, Button, EmptyState, Field, useUi } from '../components/ui';
+import { AccessDenied } from '../components/AccessDenied';
 
 // Редактор тяжёлый — грузим его только при открытии формы статьи
 const RichEditor = lazy(() => import('../components/RichEditor').then((m) => ({ default: m.RichEditor })));
@@ -12,17 +14,19 @@ const RichEditor = lazy(() => import('../components/RichEditor').then((m) => ({ 
 const NO_CATEGORY = 'none';
 
 export function KnowledgeList() {
-  const { state, empName } = useStore();
+  const { state, access, empName } = useStore();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [sort, setSort] = useState<'updated' | 'title'>('updated');
 
+  // черновики видят только автор и те, у кого есть право публикации
+  const visible = useMemo(() => state.articles.filter(access.canViewArticle), [state.articles, access]);
   const categoryName = (id: string | null) => state.categories.find((c) => c.id === id)?.name ?? 'Без категории';
-  const uncategorized = state.articles.filter((a) => !state.categories.some((c) => c.id === a.categoryId)).length;
+  const uncategorized = visible.filter((a) => !state.categories.some((c) => c.id === a.categoryId)).length;
 
   const articles = useMemo(() => {
     const known = new Set(state.categories.map((c) => c.id));
-    return state.articles
+    return visible
       .filter((a) => {
         if (category === 'all') return true;
         if (category === NO_CATEGORY) return !a.categoryId || !known.has(a.categoryId);
@@ -30,7 +34,7 @@ export function KnowledgeList() {
       })
       .filter((a) => matches(query, a.title, stripHtml(a.content)))
       .sort((a, b) => (sort === 'title' ? a.title.localeCompare(b.title, 'ru') : b.updatedAt.localeCompare(a.updatedAt)));
-  }, [state.articles, state.categories, category, query, sort]);
+  }, [visible, state.categories, category, query, sort]);
 
   return (
     <>
@@ -39,9 +43,11 @@ export function KnowledgeList() {
           <h1 className="page-title">База знаний</h1>
           <p className="page-sub">Инструкции, регламенты и ответы на частые вопросы</p>
         </div>
-        <Link to="/kb/new" className="btn btn-primary">
-          <Plus size={16} /> Новая статья
-        </Link>
+        {access.has('kb.create') && (
+          <Link to="/kb/new" className="btn btn-primary">
+            <Plus size={16} /> Новая статья
+          </Link>
+        )}
       </div>
 
       <div className="toolbar">
@@ -64,11 +70,11 @@ export function KnowledgeList() {
 
       <div className="chips" role="group" aria-label="Категории">
         <button type="button" className={`chip${category === 'all' ? ' active' : ''}`} onClick={() => setCategory('all')}>
-          Все <span className="chip-count">{state.articles.length}</span>
+          Все <span className="chip-count">{visible.length}</span>
         </button>
         {state.categories.map((c) => (
           <button key={c.id} type="button" className={`chip${category === c.id ? ' active' : ''}`} onClick={() => setCategory(c.id)}>
-            {c.name} <span className="chip-count">{state.articles.filter((a) => a.categoryId === c.id).length}</span>
+            {c.name} <span className="chip-count">{visible.filter((a) => a.categoryId === c.id).length}</span>
           </button>
         ))}
         {uncategorized > 0 && (
@@ -100,7 +106,10 @@ export function KnowledgeList() {
         <div className="grid grid-3">
           {articles.map((a) => (
             <Link key={a.id} to={`/kb/${a.id}`} className="card card-link article-card">
-              <Badge tone="blue">{categoryName(a.categoryId)}</Badge>
+              <span className="badges">
+                <Badge tone="blue">{categoryName(a.categoryId)}</Badge>
+                {a.status === 'draft' && <Badge tone="amber">Черновик</Badge>}
+              </span>
               <h2 className="article-card-title">{a.title}</h2>
               <p className="muted article-card-text">{excerpt(a.content)}</p>
               <div className="article-card-foot">
@@ -118,12 +127,15 @@ export function KnowledgeList() {
 
 export function ArticleView() {
   const { id } = useParams();
-  const { state, can, actions, empName, emp } = useStore();
+  const { state, access, actions, empName, emp } = useStore();
   const { confirm, toast } = useUi();
   const navigate = useNavigate();
   const article = state.articles.find((a) => a.id === id);
   const html = useMemo(() => (article ? DOMPurify.sanitize(article.content) : ''), [article]);
 
+  if (article && !access.canViewArticle(article)) {
+    return <AccessDenied text="Статья ещё не опубликована. Черновики видят автор и редакторы базы знаний." />;
+  }
   if (!article) {
     return (
       <div className="card">
@@ -148,10 +160,21 @@ export function ArticleView() {
       danger: true,
     });
     if (!ok) return;
-    actions.deleteArticle(article.id);
+    if (!actions.deleteArticle(article.id)) return;
     toast('Статья удалена');
     navigate('/kb');
   };
+
+  const togglePublish = () => {
+    const next: ArticleStatus = article.status === 'published' ? 'draft' : 'published';
+    if (actions.setArticleStatus(article.id, next)) {
+      toast(next === 'published' ? 'Статья опубликована' : 'Статья снята с публикации');
+    }
+  };
+
+  const canEdit = access.canEditArticle(article);
+  const canDelete = access.canDeleteArticle(article);
+  const canPublish = access.has('kb.publish');
 
   return (
     <article className="article">
@@ -159,19 +182,31 @@ export function ArticleView() {
         <Link to="/kb" className="back-link">
           <ArrowLeft size={16} /> База знаний
         </Link>
-        {can('article.edit', article) && (
+        {(canEdit || canDelete || canPublish) && (
           <div className="actions">
-            <Link to={`/kb/${article.id}/edit`} className="btn btn-secondary">
-              <Pencil size={16} /> Редактировать
-            </Link>
-            <Button variant="danger" onClick={remove}>
-              <Trash2 size={16} /> Удалить
-            </Button>
+            {canPublish && (
+              <Button onClick={togglePublish}>
+                {article.status === 'published' ? <><EyeOff size={16} /> Снять с публикации</> : <><Send size={16} /> Опубликовать</>}
+              </Button>
+            )}
+            {canEdit && (
+              <Link to={`/kb/${article.id}/edit`} className="btn btn-secondary">
+                <Pencil size={16} /> Редактировать
+              </Link>
+            )}
+            {canDelete && (
+              <Button variant="danger" onClick={remove}>
+                <Trash2 size={16} /> Удалить
+              </Button>
+            )}
           </div>
         )}
       </div>
       <div className="card article-body">
-        <Badge tone="blue">{category}</Badge>
+        <span className="badges">
+          <Badge tone="blue">{category}</Badge>
+          {article.status === 'draft' && <Badge tone="amber">Черновик — видят только автор и редакторы</Badge>}
+        </span>
         <h1 className="article-title">{article.title}</h1>
         <div className="article-meta">
           <Avatar name={empName(article.authorId)} id={article.authorId} />
@@ -194,10 +229,11 @@ export function ArticleView() {
 
 export function ArticleEdit() {
   const { id } = useParams();
-  const { state, can, actions } = useStore();
+  const { state, access, actions } = useStore();
   const { toast } = useUi();
   const navigate = useNavigate();
   const existing = id ? state.articles.find((a) => a.id === id) : undefined;
+  const canPublish = access.has('kb.publish');
 
   const [title, setTitle] = useState(existing?.title ?? '');
   const [categoryId, setCategoryId] = useState(existing?.categoryId ?? state.categories[0]?.id ?? '');
@@ -211,25 +247,27 @@ export function ArticleEdit() {
       </div>
     );
   }
-  if (existing && !can('article.edit', existing)) {
+  if (existing ? !access.canEditArticle(existing) : !access.has('kb.create')) {
     return (
-      <div className="card">
-        <EmptyState
-          title="Недостаточно прав"
-          text="Редактировать статью может её автор, руководитель или администратор."
-          action={<Link to={`/kb/${existing.id}`} className="btn btn-secondary">Вернуться к статье</Link>}
-        />
-      </div>
+      <AccessDenied
+        text={
+          existing
+            ? 'Редактировать статью могут её автор (при праве создания статей) и редакторы базы знаний.'
+            : 'Создавать статьи могут сотрудники с правом «Создание статей». Обратитесь к администратору.'
+        }
+      />
     );
   }
 
   const back = existing ? `/kb/${existing.id}` : '/kb';
 
-  const save = () => {
+  const save = (status: ArticleStatus) => {
     if (!title.trim()) return setError('Укажите заголовок статьи');
     if (!stripHtml(content) && !content.includes('<img')) return setError('Добавьте текст статьи');
-    const savedId = actions.saveArticle({ title: title.trim(), categoryId: categoryId || null, content }, existing?.id);
-    toast(existing ? 'Статья сохранена' : 'Статья опубликована');
+    const savedId = actions.saveArticle({ title: title.trim(), categoryId: categoryId || null, content, status }, existing?.id);
+    if (!savedId) return;
+    const saved = canPublish ? status : (existing?.status ?? 'draft');
+    toast(saved === 'published' ? 'Статья сохранена и опубликована' : 'Черновик сохранён');
     navigate(`/kb/${savedId}`);
   };
 
@@ -280,12 +318,28 @@ export function ArticleEdit() {
             Изображения уменьшаются и сохраняются в браузере вместе со статьёй, поэтому не добавляйте их слишком много.
           </span>
         </div>
+        {!canPublish && (
+          <p className="field-hint">
+            {existing?.status === 'published'
+              ? 'Статья останется опубликованной. Снять её с публикации может редактор базы знаний.'
+              : 'Статья сохранится черновиком. Опубликовать её может редактор базы знаний.'}
+          </p>
+        )}
         {error && <div className="form-error" role="alert">{error}</div>}
         <div className="form-actions">
           <Button onClick={() => navigate(back)}>Отмена</Button>
-          <Button variant="primary" onClick={save}>
-            {existing ? 'Сохранить' : 'Опубликовать'}
-          </Button>
+          {canPublish ? (
+            <>
+              <Button onClick={() => save('draft')}>Сохранить черновик</Button>
+              <Button variant="primary" onClick={() => save('published')}>
+                Опубликовать
+              </Button>
+            </>
+          ) : (
+            <Button variant="primary" onClick={() => save(existing?.status ?? 'draft')}>
+              {existing ? 'Сохранить' : 'Сохранить черновик'}
+            </Button>
+          )}
         </div>
       </div>
     </div>
