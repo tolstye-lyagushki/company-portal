@@ -4,6 +4,7 @@ import { useStore } from '../store';
 import type { Tone } from '../lib/utils';
 import { PRIORITY, REQUEST_STATUS, TASK_STATUS, dueLabel, formatDateTime, formatDayLong, today } from '../lib/utils';
 import { Badge, EmptyState } from '../components/ui';
+import { TakoyakiIllustration } from '../components/Brand';
 
 function greeting() {
   const h = new Date().getHours();
@@ -50,16 +51,18 @@ export default function Home() {
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">
+      <section className="hero">
+        <div className="hero-text">
+          <span className="hero-kicker">Такояки · Такояки-мисэ · Санкт-Петербург</span>
+          <h1 className="hero-title">
             {greeting()}, {me.name.split(' ')[0]}!
           </h1>
-          <p className="page-sub">
+          <p className="hero-sub">
             {formatDayLong(now)} · {me.position}
           </p>
         </div>
-      </div>
+        <TakoyakiIllustration className="hero-art" />
+      </section>
 
       {quick.length > 0 && (
         <div className="quick">

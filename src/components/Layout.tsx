@@ -33,6 +33,7 @@ import {
 import type { Access } from '../lib/permissions';
 import { Avatar, Button, IconButton, Modal, useUi } from './ui';
 import { ErrorBoundary } from './ErrorBoundary';
+import { BrandMark } from './Brand';
 
 interface NavEntry {
   to: string;
@@ -379,7 +380,7 @@ export function Layout() {
 
   useEffect(() => {
     const section = NAV.find((n) => (n.end ? location.pathname === n.to : location.pathname.startsWith(n.to)));
-    document.title = section && section.to !== '/' ? `${section.label} — Портал компании` : 'Портал компании';
+    document.title = section && section.to !== '/' ? `${section.label} — Такояки` : 'Такояки — портал команды';
   }, [location.pathname]);
 
   const nav = NAV.filter((n) => !n.visible || n.visible(access));
@@ -396,8 +397,11 @@ export function Layout() {
     <div className="app">
       <aside className="sidebar">
         <Link to="/" className="brand">
-          <span className="brand-mark">П</span>
-          <span className="brand-name">Портал компании</span>
+          <BrandMark size={38} />
+          <span className="brand-text">
+            <span className="brand-name">Такояки</span>
+            <span className="brand-sub">портал команды</span>
+          </span>
         </Link>
         <nav className="nav" aria-label="Разделы">
           {nav.map((n) => (
@@ -420,7 +424,8 @@ export function Layout() {
       <div className="main">
         <header className="topbar">
           <Link to="/" className="brand brand-mobile" aria-label="На главную">
-            <span className="brand-mark">П</span>
+            <BrandMark size={34} />
+            <span className="brand-name">Такояки</span>
           </Link>
           <div className="topbar-search">
             <GlobalSearch />

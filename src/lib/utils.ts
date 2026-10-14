@@ -99,7 +99,8 @@ export function initials(name: string | null | undefined) {
   return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '?';
 }
 
-const AVATAR_COLORS = ['#3557d6', '#0f8a7e', '#b4572b', '#7a4fd0', '#2f7d4f', '#b23a6b', '#4a6078', '#9a6b12'];
+// тёплая палитра фирменного стиля: киноварь, индиго, маття, графит, охра, слива, морская волна, каштан
+const AVATAR_COLORS = ['#b8262e', '#2c4f7c', '#4f7a2c', '#3a3632', '#a86a12', '#7a3b6e', '#1f6a60', '#7a3f22'];
 
 export function avatarColor(seed: string | null | undefined) {
   const s = seed ?? '';
