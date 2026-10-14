@@ -180,7 +180,7 @@ function useNotifications() {
     }
     for (const r of state.requests) {
       if (can('request.viewAll') && r.status === 'new' && r.authorId !== me.id) {
-        list.push({ key: `n${r.id}`, to: `/requests/${r.id}`, tone: 'blue', text: `Новая заявка от ${empName(r.authorId)}: «${r.title}»` });
+        list.push({ key: `n${r.id}`, to: `/requests/${r.id}`, tone: 'blue', text: `Новая заявка «${r.title}» — ${empName(r.authorId)}` });
       }
       const last = r.history[r.history.length - 1];
       if (r.authorId === me.id && last && last.authorId !== me.id && daysBetween(last.at.slice(0, 10), now) <= 7) {
@@ -369,6 +369,11 @@ export function Layout() {
     window.scrollTo(0, 0);
     setMoreOpen(false);
     setSearchOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const section = NAV.find((n) => (n.end ? location.pathname === n.to : location.pathname.startsWith(n.to)));
+    document.title = section && section.to !== '/' ? `${section.label} — Портал компании` : 'Портал компании';
   }, [location.pathname]);
 
   const nav = NAV.filter((n) => !n.adminOnly || can('admin'));

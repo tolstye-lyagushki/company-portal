@@ -19,6 +19,8 @@ import {
 import { Avatar, Badge, Button, EmptyState, Field, Modal, Segmented, useUi } from '../components/ui';
 import { Comments } from '../components/Comments';
 
+const VIEW_KEY = 'company-portal:tasks-view';
+
 function TaskForm({ task, onClose }: { task?: Task; onClose: () => void }) {
   const { state, me, actions } = useStore();
   const { toast } = useUi();
@@ -220,7 +222,22 @@ export default function Tasks() {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | 'open' | TaskStatus>('all');
   const [assignee, setAssignee] = useState('all');
-  const [view, setView] = useState<'list' | 'board'>('list');
+  // выбранный вид запоминается в этом браузере отдельным ключом, данные портала он не трогает
+  const [view, setView] = useState<'list' | 'board'>(() => {
+    try {
+      return localStorage.getItem(VIEW_KEY) === 'board' ? 'board' : 'list';
+    } catch {
+      return 'list';
+    }
+  });
+  const changeView = (next: 'list' | 'board') => {
+    setView(next);
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      // хранилище недоступно — вид просто не запомнится
+    }
+  };
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
 
@@ -295,7 +312,7 @@ export default function Tasks() {
         <Segmented
           label="Вид"
           value={view}
-          onChange={setView}
+          onChange={changeView}
           options={[
             { value: 'list', label: <List size={16} />, title: 'Список' },
             { value: 'board', label: <Kanban size={16} />, title: 'Доска' },

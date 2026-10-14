@@ -69,7 +69,9 @@ export function dueLabel(iso: string) {
 /* ---------- Текст ---------- */
 
 export function stripHtml(html: string) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
+  // пробел после блочных элементов, иначе абзацы и заголовки склеиваются: «сотрудников.Разделы»
+  const spaced = (html ?? '').replace(/<\/(p|h[1-6]|li|blockquote|pre|div)>|<br\s*\/?>/gi, '$& ');
+  const doc = new DOMParser().parseFromString(spaced, 'text/html');
   return (doc.body.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
