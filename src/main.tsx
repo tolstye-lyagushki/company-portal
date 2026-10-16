@@ -14,10 +14,11 @@ import { EmployeeList, EmployeeProfile } from './pages/Employees';
 import Admin from './pages/Admin';
 import NotFound from './pages/NotFound';
 // фирменные шрифты собираются вместе с сайтом — без обращений к внешним серверам
-import '@fontsource/manrope/400.css';
-import '@fontsource/manrope/500.css';
-import '@fontsource/manrope/600.css';
-import '@fontsource/manrope/700.css';
+import '@fontsource/onest/400.css';
+import '@fontsource/onest/500.css';
+import '@fontsource/onest/600.css';
+import '@fontsource/onest/700.css';
+import '@fontsource/onest/800.css';
 import '@fontsource/unbounded/500.css';
 import '@fontsource/unbounded/700.css';
 import './styles.css';

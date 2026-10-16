@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, ChevronRight, CircleAlert, FileText, Inbox, ListChecks, Plus, Users, type LucideIcon } from 'lucide-react';
+import { BookOpen, ChevronRight, CircleAlert, FileText, Inbox, ListChecks, MapPin, Plus, Users, type LucideIcon } from 'lucide-react';
 import { useStore } from '../store';
 import type { Tone } from '../lib/utils';
 import { PRIORITY, REQUEST_STATUS, TASK_STATUS, dueLabel, formatDateTime, formatDayLong, today } from '../lib/utils';
@@ -53,26 +53,27 @@ export default function Home() {
     <>
       <section className="hero">
         <div className="hero-text">
-          <span className="hero-kicker">Такояки · Такояки-мисэ · Санкт-Петербург</span>
           <h1 className="hero-title">
             {greeting()}, {me.name.split(' ')[0]}!
           </h1>
           <p className="hero-sub">
             {formatDayLong(now)} · {me.position}
           </p>
+          <p className="hero-place">
+            <MapPin size={15} /> Такояки · Санкт-Петербург
+          </p>
+          {quick.length > 0 && (
+            <div className="quick">
+              {quick.map((q) => (
+                <Link key={q.to} to={q.to} className="quick-item">
+                  <span className={`quick-icon tone-${q.tone}`}><q.icon size={16} /></span> {q.label}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
         <TakoyakiIllustration className="hero-art" />
       </section>
-
-      {quick.length > 0 && (
-        <div className="quick">
-          {quick.map((q) => (
-            <Link key={q.to} to={q.to} className="quick-item">
-              <span className={`quick-icon tone-${q.tone}`}><q.icon size={18} /></span> {q.label}
-            </Link>
-          ))}
-        </div>
-      )}
 
       {stats.length > 0 && (
         <div className="stats">
